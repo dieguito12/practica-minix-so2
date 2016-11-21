@@ -46,6 +46,11 @@ int do_getepinfo(void);
 int do_svrctl(void);
 int do_getsetpriority(void);
 int do_getrusage(void);
+int do_getdatetime(void);
+int do_sem_create(void);
+int do_sem_terminate(void);
+int do_sem_down(void);
+int do_sem_up(void);
 
 /* schedule.c */
 void sched_init(void);

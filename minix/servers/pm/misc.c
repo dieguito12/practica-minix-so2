@@ -23,6 +23,8 @@
 #include <minix/ds.h>
 #include <machine/archtypes.h>
 #include <lib.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <assert.h>
 #include "mproc.h"
 #include "kernel/proc.h"
@@ -43,6 +45,23 @@ struct utsname uts_val = {
 #endif
 };
 
+int Semaphore[31] = { 0 };
+int Sema_Value[31] = {1};
+int isInitialized = 0;
+
+struct Queue * ArQueue[31] = {NULL};
+
+struct Queue {
+ 	int size;
+	struct Node *rear;
+	struct Node *front;
+};
+
+struct Node {
+	int process;
+	struct Node* next;
+};
+
 static char *uts_tbl[] = {
   uts_val.arch,
   NULL,			/* No kernel architecture */
@@ -58,6 +77,217 @@ static char *uts_tbl[] = {
 #if ENABLE_SYSCALL_STATS
 unsigned long calls_stats[NR_PM_CALLS];
 #endif
+
+void addQueue(struct Queue * q, int process);
+
+void initialize();
+
+void initialize()
+{
+	for(int i = 0; i < 31; i++)
+	{
+		Semaphore[i] = -1;
+		Sema_Value[i] = 1;
+		ArQueue[i] = NULL;
+	}
+	isInitialized = 1;
+}
+
+int findNode(struct Queue * q, int value);
+
+int decreQueue(struct Queue * q);
+
+struct Queue * createQueue();
+
+/*
+	do_sem_create
+*/
+int do_sem_create()
+{
+	int sem_id = m_in.m1_i1;
+	int process_id = m_in.m1_i2;
+	if(Semaphore[sem_id] == 1)
+	{
+		return -1;
+	}
+	struct Queue* q = createQueue();
+	Semaphore[sem_id]=1;
+	Sema_Value[sem_id]=0;
+	addQueue(q,process_id);
+	ArQueue[sem_id]=q;	
+	return 0;
+}
+
+/*
+	do_sem_terminate
+*/
+
+int do_sem_terminate()
+{
+	int sem_id = m_in.m1_i1;	
+
+	if(Semaphore[sem_id]==0)
+	{
+		return -1;
+	}
+	Semaphore[sem_id]=-1;
+	Sema_Value[sem_id]=1;
+	ArQueue[sem_id]=NULL;
+	return 0;
+}
+
+/*
+	do_sem_down
+*/
+int do_sem_down()
+{
+	int sem_id = m_in.m1_i1;
+	int pid = m_in.m1_i2;
+	
+	struct Queue * q = ArQueue[sem_id];
+	if(Semaphore[sem_id] == 0) {
+		return -1;
+	}
+	if (q->front != NULL) {
+		if(Sema_Value[sem_id] != 1 && pid == q->front->process)
+		{
+			return -1;
+		}
+		if(pid == q->front->process) {
+			Sema_Value[sem_id]=0;
+		}
+		else if(findNode(q, pid) == 0){
+			addQueue(q, pid);
+			ArQueue[sem_id] = q;
+			return -2;
+		}
+		else {
+			return -2;
+		}
+	}
+	else {
+		addQueue(q, pid);
+		ArQueue[sem_id] = q;		
+	}
+	return 0;
+}
+/*
+	do_sem_up
+*/
+int do_sem_up()
+{	
+	int sem_id = m_in.m1_i1;
+	int pid = m_in.m1_i2;
+
+	struct Queue * q = ArQueue[sem_id];
+	if (Semaphore[sem_id] == 0){
+		return -1;
+	}
+	if(Semaphore[sem_id] != 1 && pid == q->front->process)
+	{
+		return -1;
+	}
+
+	if(pid != q->front->process){
+		return -2;
+	}
+	else
+	{
+		Sema_Value[sem_id]=1;
+		decreQueue(q);
+		ArQueue[sem_id] = q;
+	}
+	return 0;
+}
+/*
+	do_getdatetime
+*/
+int do_getdatetime()
+{
+	clock_t ticks, realtime;
+	time_t boottime;
+	int s;
+	long long int secs;
+
+	if ( (s=getuptime(&ticks, &realtime, &boottime)) != OK)
+		panic("do_getdatetime couldn't get uptime: %d", s);
+	secs = boottime + (realtime / system_hz);
+	int years = 1970 + (secs / 31556926);
+	int months = (1 + (secs % 31556926) / 2629746);
+	int days = ((secs % 31556926) % 2629746) / 86400;
+	int hours = ( ( ( secs % 31556926 ) % 2629746) % 86400 ) / 3600 
+- 1; 
+	int minutes = (((((secs % 31556926) % 2629746) % 86400) % 3600) - 1) / 60;
+	
+	printf("Current date: %d - %d - %d  %d:%d: ... %lld\n", years, 
+months, 
+days, hours, minutes, secs);	
+	//printf("Test\n");
+	return(OK);
+}
+
+
+struct Queue* createQueue()
+{
+  struct Queue * q;
+
+  q=(struct Queue *)malloc(sizeof(struct Queue));
+  q->size= 0;
+  q->front= NULL;
+  q->rear= NULL;
+
+  return q;
+}
+
+int findNode(struct Queue * q, int value)
+{
+	struct Node * first = q->front;
+	while(first != NULL){
+		if (first->process == value){
+			return 1;
+		}
+		first = first->next;
+	}
+	printf("%d\n", first->process);
+	return 0;
+}
+
+void addQueue(struct Queue *q, int process)
+{
+	struct Node *var = (struct Node*)malloc(sizeof(struct Node));
+	var->process = process;
+	if(q->front==NULL)
+	{
+	  q->front = var;
+	  q->front->next = NULL;
+	  q->rear = q->front;    
+	}
+  	else
+	{
+	  q->rear->next = var;
+	  q->rear = var;
+	}
+ 	q->size++;
+}
+
+int decreQueue(struct Queue *q)
+{
+	struct Node *temp = q->front;
+	if(temp == NULL)
+	{
+	  return -1;
+	}
+	q->front = q->front->next;
+	temp->next = NULL;
+	q->size--;
+	return temp->process;
+}
+
+int size_queue(struct Queue* q)
+{
+	return q->size;
+}
+
 
 /*===========================================================================*
  *				do_sysuname				     *
